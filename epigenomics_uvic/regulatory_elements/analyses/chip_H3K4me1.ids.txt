@@ -1,0 +1,4 @@
+ENCFF372FFI	stomach
+ENCFF487CDU	sigmoid colon
+ENCFF724ZOF	sigmoid colon
+ENCFF844XRN	stomach

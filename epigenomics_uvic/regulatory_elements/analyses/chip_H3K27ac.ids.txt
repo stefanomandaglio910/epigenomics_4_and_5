@@ -1,0 +1,4 @@
+ENCFF683OKQ	sigmoid colon
+ENCFF872UHN	sigmoid colon
+ENCFF932GIV	stomach
+ENCFF977LBD	stomach
