@@ -1,0 +1,96 @@
+# entering in docker environment
+docker run -v $PWD:$PWD -w $PWD --rm -it dgarrimar/epigenomics_course
+
+git clone https://github.com/bborsari/epigenomics_uvic
+
+cd epigenomics_uvic
+
+./bin/download.metadata.sh "https://www.encodeproject.org/metadata/?replicates.library.biosample.donor.uuid=d370683e-81e7-473f-8475-7716d027849b&status=released&status=submitted&status=in+progress&assay_title=ATAC-seq&biosample_ontology.term_name=stomach&biosample_ontology.term_name=sigmoid+colon&type=Experiment"
+
+# Check how many files for this experiment:
+grep -F "sigmoid_colon" metadata.tsv | awk 'BEGIN{FS="\t"}$2=="fastq"{n++}END{print n+0}'
+# Output: 2
+
+# create folder to store Bed files
+mkdir -p analyses/data/bigBed.files
+
+# create list ID filtering metadata
+grep -F "bigBed_narrowPeak" metadata.tsv |\
+grep -F "pseudoreplicated_peaks" |\
+grep -F "GRCh38" |\
+awk 'BEGIN{FS=OFS="\t"}{print $1, $11}' |\
+sort -k2,2 -k1,1r |\
+sort -k2,2 -u > analyses/atac_bigBed.peaks.ids.txt
+
+# downloading Bed files for bigBed narrow, pseudoreplicated peaks, assembly GRCh38) for stomach and sigmoid_colon
+cut -f1 analyses/atac_bigBed.peaks.ids.txt | while read filename; do
+  wget -P analyses/data/bigBed.files "https://www.encodeproject.org/files/$filename/@@download/$filename.bigBed"
+done
+
+# Extraction of original MD5 hash to verify integrity of downloaded files
+./bin/selectRows.sh <(cut -f1 analyses/atac_bigBed.peaks.ids.txt) metadata.tsv | \
+cut -f1,46 > analyses/data/bigBed.files/md5sum.txt
+
+# compute MD5 hash on the downloaded files
+cat analyses/data/bigBed.files/md5sum.txt | while read filename original_md5sum; do 
+  md5sum analyses/data/bigBed.files/"$filename".bigBed | \
+  awk -v filename="$filename" -v original_md5sum="$original_md5sum" 'BEGIN{FS=" "; OFS="\t"}{print filename, original_md5sum, $1}' 
+done > tmp 
+mv tmp analyses/data/bigBed.files/md5sum.txt
+
+# make sure there are no files for which original and computed MD5 hashes differ
+awk '$2!=$3' analyses/data/bigBed.files/md5sum.txt
+
+# No output obtained.
+
+# Create a folder annotation. Download and uncompressing the gencode.v24.primary_assembly.annotation file.
+mkdir -p annotation
+wget -P annotation "https://www.encodeproject.org/files/gencode.v24.primary_assembly.annotation/@@download/gencode.v24.primary_assembly.annotation.gtf.gz"
+gunzip annotation/gencode.v24.primary_assembly.annotation.gtf.gz
+
+# converting annotation file from gtf to BED format
+awk '$3=="gene"' annotation/gencode.v24.primary_assembly.annotation.gtf |\
+grep -F "protein_coding" |\
+cut -d ";" -f1 |\
+awk 'BEGIN{OFS="\t"}{print $1, $4, $5, $10, 0, $7}' |\
+sed 's/\"//g' |\
+awk 'BEGIN{FS=OFS="\t"}$1!="chrM"{$2=($2-1); print $0}' > annotation/gencode.v24.protein.coding.gene.body.bed
+
+# File gencode.v24.protein.coding.non.redundant.TSS containing list of promoters ([-2 kb, +2 Kb] from TSS) of protein-coding genes downloaded from hyperlink in section 3.5.1
+
+# converting bigBed files into bed files
+mkdir -p analyses/data/bed.files
+
+# Legge la lista e converte ogni file
+cat analyses/atac_bigBed.peaks.ids.txt | while read filename tissue; do 
+  echo "Convert $filename for: $tissue..."
+  bigBedToBed analyses/data/bigBed.files/"$filename".bigBed analyses/data/bed.files/"$filename".bed
+done
+
+# moving file TSS in annotation folder
+mv ../gencode.v24.protein.coding.non.redundant.TSS.bed annotation/
+
+# Count the number of peaks that intersect promoter regions 
+mkdir -p analyses/peaks.analysis
+
+cat analyses/atac_bigBed.peaks.ids.txt | while read filename tissue; do 
+  echo -n "Results per $tissue (Peaks in Promoters): "
+  bedtools intersect -a analyses/data/bed.files/"$filename".bed -b annotation/gencode.v24.protein.coding.non.redundant.TSS.bed -u | \
+  tee analyses/peaks.analysis/peaks.in.promoters."$tissue".ATAC.bed | wc -l
+done
+
+# output: 
+# Results per sigmoid_colon: 47871
+# Results per stomach: 44749
+
+# Count the number of peaks that fall outside gene coordinates (whole gene body, not just the promoter regions):
+cat analyses/atac_bigBed.peaks.ids.txt | while read filename tissue; do 
+  echo -n "Results per $tissue (Outside Gene Bodies): "
+  bedtools intersect -a analyses/data/bed.files/"$filename".bed -b annotation/gencode.v24.protein.coding.gene.body.bed -v | \
+  tee analyses/peaks.analysis/distal.peaks."$tissue".ATAC.bed | wc -l
+done
+
+# Output:
+# Results per sigmoid_colon (Outside Gene Bodies): 37035
+# Results per stomach (Outside Gene Bodies): 34537
+

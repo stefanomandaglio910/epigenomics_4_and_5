@@ -1,0 +1,160 @@
+# Follow up of task 4
+
+
+# Task 1 
+
+# Creating folder to store results     
+cd epigenomics_uvic
+mkdir regulatory_elements
+cd regulatory_elements
+
+
+
+# Task 2
+
+# downloading metadata
+wget -O ../metadata_chip.tsv "https://www.encodeproject.org/metadata/?type=Experiment&replicates.library.biosample.donor.uuid=d370683e-81e7-473f-8475-7716d027849b&status=released&assembly=GRCh38&biosample_ontology.term_name=sigmoid+colon&biosample_ontology.term_name=stomach&assay_title=Histone+ChIP-seq"
+
+# cretaing folders
+mkdir -p analyses data/bigBed.files data/bed.files  
+
+# extracting ID for H3K27ac
+grep -F "H3K27ac" ../metadata_chip.tsv | grep -E "stomach|sigmoid colon" | grep -F "GRCh38" | grep -E "pseudoreplicated peaks|replicated peaks" | grep -F "bigBed" | awk 'BEGIN{FS=OFS="\t"}{print $1, $11}' | sort -u > analyses/chip_H3K27ac.ids.txt
+
+# extracting ID for H3K4me1
+grep -F "H3K4me1" ../metadata_chip.tsv | grep -E "stomach|sigmoid colon" | grep -F "GRCh38" | grep -E "pseudoreplicated peaks|replicated peaks" | grep -F "bigBed" | awk 'BEGIN{FS=OFS="\t"}{print $1, $11}' | sort -u > analyses/chip_H3K4me1.ids.txt
+
+# download bigBed files
+cat analyses/chip_H3K27ac.ids.txt analyses/chip_H3K4me1.ids.txt | cut -f1 | while read filename; do
+  wget -c -P data/bigBed.files "https://www.encodeproject.org/files/$filename/@@download/$filename.bigBed"
+done
+
+# Hash MD5
+grep -Ff <(cat analyses/chip_H3K27ac.ids.txt analyses/chip_H3K4me1.ids.txt | cut -f1) ../metadata_chip.tsv | awk -F'\t' '{print $1, $46}' > data/bigBed.files/md5sum.txt
+
+# Calculate and confront MD5 Hashes
+cat data/bigBed.files/md5sum.txt | while read filename original_md5sum; do 
+    computed_md5=$(md5sum data/bigBed.files/"$filename".bigBed | awk '{print $1}')
+    echo -e "$filename\t$original_md5sum\t$computed_md5"
+done > tmp 
+
+mv tmp data/bigBed.files/md5sum.txt
+
+# checking
+awk '$2!=$3 {print "ERRORE: MD5 non coincide per " $1}' data/bigBed.files/md5sum.txt
+
+# No output obtained so all good.
+
+# converting bigBed to bed format
+cat analyses/chip_H3K27ac.ids.txt analyses/chip_H3K4me1.ids.txt | cut -f1 | while read filename; do
+  bigBedToBed data/bigBed.files/"$filename".bigBed data/bed.files/"$filename".bed
+done
+
+# Merging H3K27ac - Sigmoid Colon
+ids_27ac_colon=$(grep "sigmoid colon" analyses/chip_H3K27ac.ids.txt | cut -f1 | awk '{print "data/bed.files/"$1".bed"}' | xargs)
+cat $ids_27ac_colon | sort -k1,1 -k2,2n | bedtools merge > data/bed.files/H3K27ac.sigmoid_colon.merged.bed
+
+# Merging H3K4me1 - Sigmoid Colon
+ids_4me1_colon=$(grep "sigmoid colon" analyses/chip_H3K4me1.ids.txt | cut -f1 | awk '{print "data/bed.files/"$1".bed"}' | xargs)
+cat $ids_4me1_colon | sort -k1,1 -k2,2n | bedtools merge > data/bed.files/H3K4me1.sigmoid_colon.merged.bed
+
+# Intersection ATAC distal + H3K27ac + H3K4me1
+bedtools intersect -a ../analyses/peaks.analysis/distal.peaks.sigmoid_colon.ATAC.bed -b data/bed.files/H3K27ac.sigmoid_colon.merged.bed -u | \
+bedtools intersect -a stdin -b data/bed.files/H3K4me1.sigmoid_colon.merged.bed -u > analyses/candidate.distal.regulatory.sigmoid_colon.bed
+
+# Counting results for colon
+echo -n "Candidate distal regulatory elements in Sigmoid Colon: "
+wc -l < analyses/candidate.distal.regulatory.sigmoid_colon.bed
+
+# Output: 15207
+
+
+# Merging H3K27ac - Stomach
+ids_27ac_stomach=$(grep "stomach" analyses/chip_H3K27ac.ids.txt | cut -f1 | awk '{print "data/bed.files/"$1".bed"}' | xargs)
+cat $ids_27ac_stomach | sort -k1,1 -k2,2n | bedtools merge > data/bed.files/H3K27ac.stomach.merged.bed
+
+# Merging H3K4me1 - Stomach
+ids_4me1_stomach=$(grep "stomach" analyses/chip_H3K4me1.ids.txt | cut -f1 | awk '{print "data/bed.files/"$1".bed"}' | xargs)
+cat $ids_4me1_stomach | sort -k1,1 -k2,2n | bedtools merge > data/bed.files/H3K4me1.stomach.merged.bed
+
+# Intersection ATAC distal + H3K27ac + H3K4me1 for stomach
+bedtools intersect -a ../analyses/peaks.analysis/distal.peaks.stomach.ATAC.bed -b data/bed.files/H3K27ac.stomach.merged.bed -u | \
+bedtools intersect -a stdin -b data/bed.files/H3K4me1.stomach.merged.bed -u > analyses/candidate.distal.regulatory.stomach.bed
+
+# Counting results for stomach
+echo -n "Candidate distal regulatory elements in Stomach: "
+wc -l < analyses/candidate.distal.regulatory.stomach.bed
+
+# Output: 9387
+
+
+# Task 3: Extraction of chr1 coordinates for downstream analysis
+
+# Stomach coord extraction
+awk 'BEGIN{FS=OFS="\t"} $1=="chr1" {print $4, $2}' analyses/candidate.distal.regulatory.stomach.bed > analyses/regulatory.elements.starts.tsv
+
+# appending for colon
+awk 'BEGIN{FS=OFS="\t"} $1=="chr1" {print $4, $2}' analyses/candidate.distal.regulatory.sigmoid_colon.bed >> analyses/regulatory.elements.starts.tsv
+
+# Counting 
+echo -n "Total regulatory elements on chr1: "
+wc -l < analyses/regulatory.elements.starts.tsv
+
+# Output: 2776
+
+
+# Task 4
+
+# Filter chr 1 and apply logic for strand
+awk 'BEGIN{FS=OFS="\t"} $1=="chr1" {
+    if ($6=="+") {
+        start=$2
+    } else {
+        start=$3
+    }
+    print $4, start
+}' ../annotation/gencode.v24.protein.coding.gene.body.bed > analyses/gene.starts.tsv
+
+# check first 5 rows
+head -n 5 analyses/gene.starts.tsv
+
+
+# Task 5
+
+# Python file downloaded and saved into folder epigenomics_uvic/bin. Test with 
+python ../bin/get.distance.py --input analyses/gene.starts.tsv --start 980000
+# Output: ENSG00000187642.9       982093  2093
+
+
+# Task 6
+
+# code using hint from task 6
+cat analyses/regulatory.elements.starts.tsv | while read element start; do 
+   python ../bin/get.distance.py --input analyses/gene.starts.tsv --start "$start" | awk -v el="$element" '{print el, $0}'; 
+done > analyses/regulatoryElements.genes.distances.tsv
+
+
+# Task 7
+
+R
+
+# Loading dataset. I use 'sep=""' to handle whitespace/tabs and 'fill=TRUE' to manage irregular rows
+data <- read.table("analyses/regulatoryElements.genes.distances.tsv", header=FALSE, sep="", fill=TRUE)
+
+# Check cols number 
+print(paste("Number of columns detected:", ncol(data)))
+
+# Extracting the distance column. 'as.numeric' ensures the data is treated as numbers,'na.omit' removes any rows that failed to load correctly
+distances <- na.omit(as.numeric(data[,4]))
+
+# Computing Mean and Median
+mean_dist <- mean(distances)
+median_dist <- median(distances)
+
+# Display the results
+print(paste("Mean Distance:", mean_dist))
+print(paste("Median Distance:", median_dist))
+
+# Output:
+# "Mean Distance: 61719.1232432432"
+# "Median Distance: 31753"
